@@ -167,6 +167,10 @@ with right:
     st.header("Q&A (in-class)")
     st.caption("Ask about today’s TCP/IP lecture (5-layer model). Keep questions on topic.")
 
+    if os.path.exists("avatar.jpg"):
+        st.image("avatar.jpg", caption="Professor McGarry", width=200)
+
+    
     # Show history (user/assistant only)
     for m in st.session_state.messages:
         if m["role"] in ("user", "assistant"):
