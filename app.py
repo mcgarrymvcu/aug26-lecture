@@ -1,18 +1,33 @@
-import os, glob, json
+import os, glob, json, itertools, re
 import streamlit as st
 from openai import OpenAI
 
+# ---------- Page config ----------
 st.set_page_config(page_title="INFO 300 — TCP/IP Lecture", layout="wide")
 
-# ---- Load narration ----
+# ---------- Load narration ----------
 with open("narration.json", "r", encoding="utf-8") as f:
-    NARR = json.load(f)
+    NARR = json.load(f)  # expects keys "02"..."26"
 
-# ---- Discover slides and optional intro video ----
-slide_imgs = sorted(glob.glob("slides/slide_*.png"))
-intro_video_path = "videos/intro.mp4"  # optional short real intro from Prof. McGarry
+# ---------- Find slides (flexible patterns) ----------
+# Accepts slide_02.png, slide_02.PNG, Slide1.png, Slide10.PNG, etc.
+patterns = [
+    "slides/slide_*.png", "slides/slide_*.PNG",
+    "slides/Slide*.png",  "slides/Slide*.PNG",
+    "slides/*.png",       "slides/*.PNG",
+]
+slide_imgs = sorted(set(itertools.chain.from_iterable(glob.glob(p) for p in patterns)))
 
-# ---- State ----
+# Helper: turn any filename into a 2-digit slide number (e.g., "Slide1.png" -> "01")
+def to_two_digit_slide_num(path: str, idx: int) -> str:
+    base = os.path.basename(path)
+    m = re.search(r'(\d+)', base)
+    if m:
+        return f"{int(m.group(1)):02d}"
+    # Fallback if no digits in filename: assume deck starts at slide 2
+    return f"{idx + 2:02d}"
+
+# ---------- Session state ----------
 if "idx" not in st.session_state:
     st.session_state.idx = 0
 if "messages" not in st.session_state:
@@ -30,7 +45,7 @@ if "messages" not in st.session_state:
         }
     ]
 
-# ---- OpenAI client from Secrets ----
+# ---------- OpenAI client (from Secrets) ----------
 def get_openai_client():
     key = st.secrets.get("OPENAI_API_KEY", "")
     if not key:
@@ -44,57 +59,60 @@ def get_openai_client():
 
 client = get_openai_client()
 
-# ---- Sidebar: navigation ----
+# ---------- Sidebar: slide navigator ----------
 st.sidebar.title("Slides")
-for i, path in enumerate(slide_imgs):
-    label = os.path.basename(path).replace("slide_", "").replace(".png", "")
-    if st.sidebar.button(f"Slide {label}", key=f"nav_{i}"):
-        st.session_state.idx = i
-        st.rerun()
+if slide_imgs:
+    for i, path in enumerate(slide_imgs):
+        label = to_two_digit_slide_num(path, i)
+        if st.sidebar.button(f"Slide {label}", key=f"nav_{i}"):
+            st.session_state.idx = i
+            st.rerun()
+else:
+    st.sidebar.info("No slides detected yet.")
 
-# ---- Main layout ----
+# ---------- Main layout ----------
 left, right = st.columns([2, 1])
 
 with left:
     st.title("INFO 300 — TCP/IP Model (5-layer)")
 
-    # Optional short intro video (your real face)
+    # Optional short real intro
+    intro_video_path = "videos/intro.mp4"
     if os.path.exists(intro_video_path):
         with st.expander("Play instructor intro (1–2 min)", expanded=False):
             st.video(intro_video_path)
 
-    # Slide panel
-    if slide_imgs:
+    if not slide_imgs:
+        st.warning("No slides found. Please place PNGs in the 'slides/' folder.")
+    else:
         cur = slide_imgs[st.session_state.idx]
-        slide_num = os.path.basename(cur).replace("slide_", "").replace(".png", "")
+        slide_num = to_two_digit_slide_num(cur, st.session_state.idx)
+
         st.markdown(f"### Slide {slide_num}")
         st.image(cur, use_container_width=True)
 
         st.markdown("#### Narration")
         st.write(NARR.get(slide_num, "No narration found for this slide."))
 
-        # Controls
-        cols = st.columns(3)
-        if cols[0].button("⏮ Prev", use_container_width=True) and st.session_state.idx > 0:
+        c1, _, c3 = st.columns([1,1,1])
+        if c1.button("⏮ Prev", use_container_width=True) and st.session_state.idx > 0:
             st.session_state.idx -= 1
             st.rerun()
-        if cols[2].button("Next ⏭", use_container_width=True) and st.session_state.idx < len(slide_imgs)-1:
+        if c3.button("Next ⏭", use_container_width=True) and st.session_state.idx < len(slide_imgs)-1:
             st.session_state.idx += 1
             st.rerun()
-    else:
-        st.warning("No slides found. Please export slides as PNG into the slides/ folder.")
 
 with right:
     st.header("Q&A (in-class)")
     st.caption("Ask about today’s TCP/IP lecture (5-layer model). Keep questions on topic.")
 
-    # Show prior chat
+    # Show history (user/assistant only)
     for m in st.session_state.messages:
         if m["role"] in ("user", "assistant"):
             with st.chat_message("user" if m["role"]=="user" else "assistant"):
                 st.write(m["content"])
 
-    # Disable chat if no OpenAI client
+    # Chat input (disabled if no key)
     prompt = st.chat_input("Ask a question about the TCP/IP model…", disabled=(client is None))
     if client is None:
         st.info("Add your OpenAI key in Settings → Secrets to enable chat.")
@@ -102,7 +120,6 @@ with right:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.write(prompt)
-
         try:
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -112,7 +129,6 @@ with right:
             answer = resp.choices[0].message.content.strip()
         except Exception as e:
             answer = f"(Error contacting OpenAI: {e})"
-
         st.session_state.messages.append({"role": "assistant", "content": answer})
         with st.chat_message("assistant"):
             st.write(answer)
