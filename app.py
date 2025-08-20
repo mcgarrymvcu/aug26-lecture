@@ -30,6 +30,20 @@ if "messages" not in st.session_state:
         }
     ]
 
+# ---- OpenAI client from Secrets ----
+def get_openai_client():
+    key = st.secrets.get("OPENAI_API_KEY", "")
+    if not key:
+        st.sidebar.error("OPENAI_API_KEY is missing in Settings → Secrets. Chat is disabled.")
+        return None
+    try:
+        return OpenAI(api_key=key)
+    except Exception as e:
+        st.sidebar.error(f"OpenAI init failed: {e}")
+        return None
+
+client = get_openai_client()
+
 # ---- Sidebar: navigation ----
 st.sidebar.title("Slides")
 for i, path in enumerate(slide_imgs):
@@ -80,19 +94,25 @@ with right:
             with st.chat_message("user" if m["role"]=="user" else "assistant"):
                 st.write(m["content"])
 
-    prompt = st.chat_input("Ask a question about the TCP/IP model…")
-    if prompt:
+    # Disable chat if no OpenAI client
+    prompt = st.chat_input("Ask a question about the TCP/IP model…", disabled=(client is None))
+    if client is None:
+        st.info("Add your OpenAI key in Settings → Secrets to enable chat.")
+    elif prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.write(prompt)
 
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=st.session_state.messages,
-            temperature=0.3,
-        )
-        answer = resp.choices[0].message.content.strip()
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=st.session_state.messages,
+                temperature=0.3,
+            )
+            answer = resp.choices[0].message.content.strip()
+        except Exception as e:
+            answer = f"(Error contacting OpenAI: {e})"
+
         st.session_state.messages.append({"role": "assistant", "content": answer})
         with st.chat_message("assistant"):
             st.write(answer)
