@@ -128,3 +128,56 @@ with left:
                             # If base64 string, decode
                             import base64
                             audio_bytes = base64.b64decode(audio_bytes)
+                        st.session_state.tts_cache[slide_num] = audio_bytes
+                    except Exception as e:
+                        st.error(f"Audio synthesis failed: {e}")
+                if slide_num in st.session_state.tts_cache and st.session_state.tts_cache[slide_num]:
+                    st.audio(st.session_state.tts_cache[slide_num], format="audio/mp3")
+        if tts_col2.button("⟲ Regenerate audio", key=f"tts_regen_{slide_num}", use_container_width=True) and client:
+            st.session_state.tts_cache.pop(slide_num, None)
+            st.rerun()
+
+        # ---- Prev / Next ----
+        c1, _, c3 = st.columns([1, 1, 1])
+        if c1.button("⏮ Prev", use_container_width=True) and st.session_state.idx > 0:
+            st.session_state.idx -= 1
+            st.rerun()
+        if c3.button("Next ⏭", use_container_width=True) and st.session_state.idx < len(slide_imgs) - 1:
+            st.session_state.idx += 1
+            st.rerun()
+
+with right:
+    # ----- Static avatar (place avatar.jpg in repo root) -----
+    if os.path.exists("avatar.jpg"):
+        st.image("avatar.jpg", caption="Professor McGarry", use_container_width=True)
+
+    st.header("Q&A (in-class)")
+    st.caption("Ask about today’s TCP/IP lecture (5-layer model). Keep questions on topic.")
+
+    # Show history (user/assistant only)
+    for m in st.session_state.messages:
+        if m["role"] in ("user", "assistant"):
+            with st.chat_message("user" if m["role"] == "user" else "assistant"):
+                st.write(m["content"])
+
+    # Chat input (disabled if no key)
+    prompt = st.chat_input("Ask a question about the TCP/IP model…", disabled=(client is None))
+    if client is None:
+        st.info("Add your OpenAI key in Settings → Secrets to enable chat.")
+    elif prompt:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.write(prompt)
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=st.session_state.messages,
+                temperature=0.3,
+            )
+            answer = resp.choices[0].message.content.strip()
+        except Exception as e:
+            answer = f"(Error contacting OpenAI: {e})"
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        with st.chat_message("assistant"):
+            st.write(answer)
+
