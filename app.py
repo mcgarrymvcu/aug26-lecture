@@ -87,9 +87,11 @@ def get_openai_client():
 client = get_openai_client()
 
 # ---------- Sidebar: avatar + slide navigator ----------
-if os.path.exists("avatar.jpg"):
-    st.sidebar.markdown('<img src="avatar.jpg" class="avatar-img">', unsafe_allow_html=True)
-    st.sidebar.markdown('<div class="avatar-caption">Professor McGarry</div>', unsafe_allow_html=True)
+avatar_path = "avatar.jpg"  # repo root
+if os.path.exists(avatar_path):
+    st.sidebar.image(avatar_path, caption="Professor McGarry", width=140)
+else:
+    st.sidebar.caption("No avatar found at ./avatar.jpg")
 
 st.sidebar.title("Slides")
 if slide_imgs:
