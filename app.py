@@ -47,7 +47,7 @@ patterns = [
     "slides/Slide*.png",  "slides/Slide*.PNG",
     "slides/*.png",       "slides/*.PNG",
 ]
-all_files = set(itertools.chain.from_iterable(glob.glob(p) for p in patterns)))
+all_files = set(itertools.chain.from_iterable(glob.glob(p) for p in patterns))
 slide_imgs = sorted(all_files, key=numeric_key)
 
 # ---------- Session State ----------
