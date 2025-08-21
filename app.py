@@ -1,106 +1,127 @@
+import os, glob, itertools, json
 import streamlit as st
-import os, glob, itertools
 from openai import OpenAI
-from streamlit.components.v1 import html
 
 # ===============================
-# CONFIG & SETUP
+# CONFIG
 # ===============================
-st.set_page_config(layout="wide", page_title="INFO 300 Lecture")
+st.set_page_config(
+    page_title="INFO 300 — TCP/IP Lecture",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# Load OpenAI client
+# OpenAI client
 client = None
-if "OPENAI_API_KEY" in st.secrets:
+OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", "")
+if OPENAI_KEY:
     try:
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    except Exception as e:
-        st.error(f"Could not initialize OpenAI: {e}")
+        client = OpenAI(api_key=OPENAI_KEY)
+    except Exception:
+        client = None
 
-# Session state init
+VOICE = st.secrets.get("VOICE", "verse")  # e.g., "verse" (male-ish), "alloy", "aria"
+
+# ===============================
+# HELPERS
+# ===============================
+def numeric_key(path: str) -> int:
+    """Extract first number from filename for natural sort; default 0 if none."""
+    base = os.path.basename(path)
+    digits = "".join(ch for ch in base if ch.isdigit())
+    return int(digits) if digits else 0
+
+def two_digit_from_path_or_index(path: str, idx: int) -> str:
+    """Return slide number as 2 digits for narration keys."""
+    base = os.path.basename(path)
+    digits = "".join(ch for ch in base if ch.isdigit())
+    if digits:
+        return str(int(digits)).zfill(2)
+    return str(idx + 2).zfill(2)  # fallback assumes deck starts at slide 2
+
+def find_avatar():
+    for cand in ("slides/avatar.jpg", "slides/avatar.png", "avatar.jpg", "avatar.png"):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+# ===============================
+# DATA
+# ===============================
+# Load narration
+NARR = {}
+if os.path.exists("narration.json"):
+    with open("narration.json", "r", encoding="utf-8") as f:
+        NARR = json.load(f)
+
+# Find slides (flexible + natural numeric sort)
+patterns = [
+    "slides/slide_*.png", "slides/slide_*.PNG",
+    "slides/Slide*.png",  "slides/Slide*.PNG",
+    "slides/*.png",       "slides/*.PNG",
+]
+all_files = set(itertools.chain.from_iterable(glob.glob(p) for p in patterns))
+slide_imgs = sorted(all_files, key=numeric_key)
+
+# ===============================
+# STATE
+# ===============================
 if "idx" not in st.session_state:
     st.session_state.idx = 0
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "tts_cache" not in st.session_state:
-    st.session_state.tts_cache = {}
-if "intro_shown" not in st.session_state:
-    st.session_state.intro_shown = False
+    st.session_state.tts_cache = {}   # { "02": b"<mp3 bytes>" }
+if "play_intro" not in st.session_state:
+    st.session_state.play_intro = False
 
 # ===============================
-# HELPERS
+# SIDEBAR: Slide navigator
 # ===============================
-def sorted_slides(folder="slides"):
-    """Return sorted list of slide PNGs (natural sort)."""
-    patterns = [os.path.join(folder, "*.png"), os.path.join(folder, "*.jpg")]
-    all_files = set(itertools.chain.from_iterable(glob.glob(p) for p in patterns))
-    return sorted(all_files, key=lambda x: int("".join(filter(str.isdigit, os.path.basename(x))) or 0))
-
-def to_two_digit_slide_num(path, idx):
-    fname = os.path.basename(path)
-    num = "".join(filter(str.isdigit, fname))
-    return num.zfill(2) if num else str(idx + 1).zfill(2)
-
-# Example narration dictionary
-NARR = {
-    "01": "Welcome to the TCP/IP 5-layer model lecture...",
-    "02": "Here’s the application layer overview...",
-    # Add more narration here keyed by slide numbers
-}
+st.sidebar.title("Slides")
+if slide_imgs:
+    for i, path in enumerate(slide_imgs):
+        label = two_digit_from_path_or_index(path, i)
+        if st.sidebar.button(f"Slide {label}", key=f"nav_{i}"):
+            st.session_state.idx = i
+            st.rerun()
+else:
+    st.sidebar.info("No slides detected. Place PNGs in the 'slides/' folder at repo root.")
 
 # ===============================
-# MAIN LAYOUT
+# LAYOUT
 # ===============================
 left, right = st.columns([2, 1])
 
-# ----- LEFT: Title, video, slides -----
+# ===== LEFT: Title, small intro card, slides, narration, TTS, nav =====
 with left:
     st.title("INFO 300 — TCP/IP Model (5-layer)")
 
-    # --- Intro video ---
-from streamlit.components.v1 import html
+    # --- Compact intro card (thumbnail + Play button) ---
+    intro_video_path = "videos/intro.mp4"
+    if os.path.exists(intro_video_path):
+        thumb = find_avatar()
+        if not thumb and slide_imgs:
+            thumb = slide_imgs[0]
+        c1, c2 = st.columns([1, 4])
+        with c1:
+            if thumb and os.path.exists(thumb):
+                st.image(thumb, width=110)
+        with c2:
+            st.markdown("**Instructor intro (1–2 min)**")
+            st.caption("Click to play. (Autoplay disabled on this network.)")
+            if st.button("▶️ Play intro", use_container_width=False):
+                st.session_state.play_intro = True
 
-# ----- Intro video (autoplay once, compact height, JS fallback) -----
-intro_video_path = "videos/intro.mp4"
-if os.path.exists(intro_video_path):
-    if not st.session_state.get("intro_shown", False):
-        html(
-            """
-            <video id="introvid"
-                src="videos/intro.mp4"
-                autoplay
-                muted
-                playsinline
-                controls
-                style="width:100%; height:220px; object-fit:cover; border-radius:12px; outline:none;">
-            </video>
-            <script>
-              const v = document.getElementById('introvid');
-              function tryPlay(){
-                const p = v.play();
-                if (p && p.catch) { p.catch(()=>{}); }
-              }
-              // Try on load and when enough data is ready
-              window.addEventListener('load', tryPlay);
-              v.addEventListener('canplay', tryPlay);
-            </script>
-            """,
-            height=240,  # total iframe height; tweak to 200–260 to taste
-        )
-        st.session_state.intro_shown = True
-    else:
-        with st.expander("Replay instructor intro", expanded=False):
+        if st.session_state.play_intro:
             st.video(intro_video_path)
-else:
-    st.info("Intro video not found at videos/intro.mp4")
-
 
     # --- Slides ---
-    slide_imgs = sorted_slides()
     if not slide_imgs:
         st.warning("No slides found. Please place PNGs in the 'slides/' folder.")
     else:
         cur = slide_imgs[st.session_state.idx]
-        slide_num = to_two_digit_slide_num(cur, st.session_state.idx)
+        slide_num = two_digit_from_path_or_index(cur, st.session_state.idx)
 
         st.markdown(f"### Slide {slide_num}")
         st.image(cur, use_container_width=True)
@@ -109,79 +130,76 @@ else:
         narration_text = NARR.get(slide_num, "No narration found for this slide.")
         st.write(narration_text)
 
-        # Audio narration (on-demand TTS)
+        # Audio narration (TTS)
         t1, t2, _ = st.columns([1, 1, 3])
         if t1.button("▶️ Play audio narration", key=f"tts_{slide_num}", use_container_width=True):
-            if client is None:
-                st.warning("OpenAI key missing — cannot synthesize audio.")
+            if not client:
+                st.warning("OpenAI key missing or invalid — cannot synthesize audio.")
             else:
                 if slide_num not in st.session_state.tts_cache:
                     try:
                         speech = client.audio.speech.create(
                             model="gpt-4o-mini-tts",
-                            voice="alloy",  # change to 'verse' for male-sounding voice
+                            voice=VOICE,  # change in Secrets with VOICE="alloy"/"aria"/"verse"
                             input=narration_text,
                         )
-                        audio_bytes = speech.content
+                        audio_bytes = speech.content  # recent SDKs return bytes here
                         st.session_state.tts_cache[slide_num] = audio_bytes
                     except Exception as e:
                         st.error(f"Audio synthesis failed: {e}")
-                if slide_num in st.session_state.tts_cache and st.session_state.tts_cache[slide_num]:
+                if st.session_state.tts_cache.get(slide_num):
                     st.audio(st.session_state.tts_cache[slide_num], format="audio/mp3")
+
         if t2.button("⟲ Regenerate audio", key=f"tts_regen_{slide_num}", use_container_width=True) and client:
             st.session_state.tts_cache.pop(slide_num, None)
             st.rerun()
 
-        # Slide navigation
-        nav1, nav2, _ = st.columns([1, 1, 4])
-        if nav1.button("⬅️ Prev", use_container_width=True):
+        # Prev / Next buttons
+        n1, n2, n3 = st.columns([1, 4, 1])
+        if n1.button("⬅️ Prev", use_container_width=True):
             st.session_state.idx = max(0, st.session_state.idx - 1)
             st.rerun()
-        if nav2.button("Next ➡️", use_container_width=True):
+        n2.write(f"Slide {st.session_state.idx + 1} of {len(slide_imgs)}")
+        if n3.button("Next ➡️", use_container_width=True):
             st.session_state.idx = min(len(slide_imgs) - 1, st.session_state.idx + 1)
             st.rerun()
 
-# ----- RIGHT: Avatar + Q&A -----
+# ===== RIGHT: Avatar (above Q&A) + Q&A =====
 with right:
-    # Headshot above Q&A
-    avatar_path = None
-    for cand in ("slides/avatar.jpg", "slides/avatar.png", "avatar.jpg", "avatar.png"):
-        if os.path.exists(cand):
-            avatar_path = cand
-            break
-    if avatar_path:
-        st.image(avatar_path, caption="Professor McGarry", width=160)
+    # Headshot above Q&A — fixed size
+    avatar = find_avatar()
+    if avatar:
+        st.image(avatar, caption="Professor McGarry", width=160)
 
     st.header("Q&A (in-class)")
     st.caption("Ask about today’s TCP/IP lecture (5-layer model). Keep questions on topic.")
 
-    # Display chat history
+    # Chat history
     for m in st.session_state.messages:
         if m["role"] in ("user", "assistant"):
             with st.chat_message("user" if m["role"] == "user" else "assistant"):
                 st.write(m["content"])
 
-    # Input box
-    if prompt := st.chat_input("Ask a question about the lecture..."):
+    # Chat input
+    prompt = st.chat_input("Ask a question about TCP/IP…", disabled=(client is None))
+    if not client and prompt:
+        st.info("OpenAI key missing — add it in Settings → Secrets to enable chat.")
+    elif client and prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.write(prompt)
-
-        if client:
-            try:
-                resp = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a teaching assistant for an INFO 300 TCP/IP lecture. Keep answers concise and on-topic."},
-                        *st.session_state.messages
-                    ],
-                )
-                reply = resp.choices[0].message.content
-            except Exception as e:
-                reply = f"Error from OpenAI: {e}"
-        else:
-            reply = "⚠️ OpenAI key missing — cannot answer."
-
-        st.session_state.messages.append({"role": "assistant", "content": reply})
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a helpful TA for INFO 300. Keep answers concise and on-topic about the TCP/IP model (5-layer)."},
+                    *st.session_state.messages,
+                ],
+                temperature=0.3,
+            )
+            answer = response.choices[0].message.content
+        except Exception as e:
+            answer = f"(Error contacting OpenAI: {e})"
+        st.session_state.messages.append({"role": "assistant", "content": answer})
         with st.chat_message("assistant"):
-            st.write(reply)
+            st.write(answer)
