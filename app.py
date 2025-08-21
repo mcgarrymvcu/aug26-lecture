@@ -71,11 +71,33 @@ with left:
     st.title("INFO 300 — TCP/IP Model (5-layer)")
 
     # Intro video (local or URL from Secrets)
-    intro_video_path = "videos/intro.mp4"
-    intro_video_url = st.secrets.get("INTRO_VIDEO_URL", "").strip()
-    if os.path.exists(intro_video_path) or intro_video_url:
-        with st.expander("Play instructor intro (1–2 min)", expanded=False):
-            st.video(intro_video_path if os.path.exists(intro_video_path) else intro_video_url)
+    # ----- Intro video (autoplay on first load) -----
+intro_video_path = "videos/intro.mp4"
+
+if os.path.exists(intro_video_path):
+    if "intro_shown" not in st.session_state:
+        # First load: autoplay muted (required by browsers)
+        st.markdown(
+            f"""
+            <video
+                src="{intro_video_path}"
+                autoplay
+                muted
+                playsinline
+                controls
+                style="width:100%; border-radius:12px; outline:none;"
+            ></video>
+            """,
+            unsafe_allow_html=True
+        )
+        st.session_state.intro_shown = True
+    else:
+        # Replay option after first load
+        with st.expander("Replay instructor intro", expanded=False):
+            st.video(intro_video_path)
+    else:
+        st.info("Intro video not found in videos/intro.mp4")
+
 
     # Slide panel
     if not slide_imgs:
