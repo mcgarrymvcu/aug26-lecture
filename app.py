@@ -57,26 +57,42 @@ with left:
     st.title("INFO 300 — TCP/IP Model (5-layer)")
 
     # --- Intro video ---
-    intro_video_path = "videos/intro.mp4"
-    if os.path.exists(intro_video_path):
-        if not st.session_state.intro_shown:
-            html(
-                """
-                <video
-                    src="videos/intro.mp4"
-                    autoplay
-                    muted
-                    playsinline
-                    controls
-                    style="width:100%; border-radius:12px; outline:none;"
-                ></video>
-                """,
-                height=360,
-            )
-            st.session_state.intro_shown = True
-        else:
-            with st.expander("Replay instructor intro", expanded=False):
-                st.video(intro_video_path)
+from streamlit.components.v1 import html
+
+# ----- Intro video (autoplay once, compact height, JS fallback) -----
+intro_video_path = "videos/intro.mp4"
+if os.path.exists(intro_video_path):
+    if not st.session_state.get("intro_shown", False):
+        html(
+            """
+            <video id="introvid"
+                src="videos/intro.mp4"
+                autoplay
+                muted
+                playsinline
+                controls
+                style="width:100%; height:220px; object-fit:cover; border-radius:12px; outline:none;">
+            </video>
+            <script>
+              const v = document.getElementById('introvid');
+              function tryPlay(){
+                const p = v.play();
+                if (p && p.catch) { p.catch(()=>{}); }
+              }
+              // Try on load and when enough data is ready
+              window.addEventListener('load', tryPlay);
+              v.addEventListener('canplay', tryPlay);
+            </script>
+            """,
+            height=240,  # total iframe height; tweak to 200–260 to taste
+        )
+        st.session_state.intro_shown = True
+    else:
+        with st.expander("Replay instructor intro", expanded=False):
+            st.video(intro_video_path)
+else:
+    st.info("Intro video not found at videos/intro.mp4")
+
 
     # --- Slides ---
     slide_imgs = sorted_slides()
