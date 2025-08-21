@@ -1,149 +1,205 @@
 import os
+import re
 import glob
 import itertools
+import json
 import streamlit as st
 from openai import OpenAI
 
-# ---------------------------
-# App setup
-# ---------------------------
+# ===============================
+# Page setup
+# ===============================
 st.set_page_config(
     page_title="INFO 300 — TCP/IP Lecture",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# OpenAI client
+# ===============================
+# OpenAI client (from Secrets)
+# ===============================
 client = None
-if "OPENAI_API_KEY" in st.secrets:
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", "")
+if OPENAI_KEY:
+    try:
+        client = OpenAI(api_key=OPENAI_KEY)
+    except Exception:
+        client = None  # We'll show a friendly message in the UI
 
-# ---------------------------
+VOICE = st.secrets.get("VOICE", "verse")  # try "verse", "alloy", or "aria"
+
+# ===============================
 # Helpers
-# ---------------------------
-def sorted_slides(folder="slides"):
-    patterns = [os.path.join(folder, "*.png"), os.path.join(folder, "*.jpg")]
+# ===============================
+def load_narration() -> dict:
+    """
+    Load narration from narration.json at repo root.
+    Normalize keys to 2 digits: "2" -> "02".
+    """
+    try:
+        with open("narration.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k).zfill(2): v for k, v in data.items()}
+    except Exception as e:
+        st.warning(f"Failed to load narration.json: {e}")
+        return {}
+
+def discover_slides(folder: str = "slides") -> list:
+    """
+    Find slide images and return a naturally sorted list by first number in filename.
+    Supports .png/.jpg (any case).
+    """
+    patterns = [
+        os.path.join(folder, "*.png"),
+        os.path.join(folder, "*.PNG"),
+        os.path.join(folder, "*.jpg"),
+        os.path.join(folder, "*.JPG"),
+        os.path.join(folder, "Slide*.png"),
+        os.path.join(folder, "Slide*.PNG"),
+    ]
     all_files = set(itertools.chain.from_iterable(glob.glob(p) for p in patterns))
-    # Sort by number if digits exist, else alphabetically
-    return sorted(all_files, key=lambda f: int(''.join(filter(str.isdigit, os.path.basename(f))) or 0))
+    def numeric_key(path: str) -> int:
+        m = re.search(r"(\d+)", os.path.basename(path))
+        return int(m.group(1)) if m else 0
+    return sorted(all_files, key=numeric_key)
 
-def to_two_digit_slide_num(fname, idx):
-    # Extract digits from filename or fallback to index
-    digits = ''.join(filter(str.isdigit, os.path.basename(fname)))
-    num = int(digits) if digits else idx + 1
-    return f"{num:02d}"
+def slide_key_for(path: str, idx: int) -> str:
+    """
+    Derive a 2-digit narration key from a slide filename.
+    If no digits are present, fall back to 1-based index.
+    """
+    m = re.search(r"(\d+)", os.path.basename(path))
+    n = int(m.group(1)) if m else (idx + 1)
+    return f"{n:02d}"
 
-def find_avatar():
+def find_avatar() -> str | None:
     for cand in ("slides/avatar.jpg", "slides/avatar.png", "avatar.jpg", "avatar.png"):
         if os.path.exists(cand):
             return cand
     return None
 
-# Example narration (replace with your lecture notes)
-NARR = {
-    "01": "Welcome to the TCP/IP 5-layer model lecture.",
-    "02": "The application layer provides network services to applications.",
-    "03": "The transport layer ensures reliable data transfer.",
-    "04": "The internet layer handles logical addressing and routing.",
-    "05": "The link layer deals with physical addressing and media access.",
-}
+# ===============================
+# Data
+# ===============================
+NARR = load_narration()
+slide_imgs = discover_slides()
 
-# ---------------------------
+# ===============================
 # Session state
-# ---------------------------
+# ===============================
 if "idx" not in st.session_state:
     st.session_state.idx = 0
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "tts_cache" not in st.session_state:
-    st.session_state.tts_cache = {}
+    st.session_state.tts_cache = {}  # { "02": b"<mp3 bytes>" }
 
-# ---------------------------
+# ===============================
+# Sidebar: slide navigator
+# ===============================
+st.sidebar.title("Slides")
+if slide_imgs:
+    for i, path in enumerate(slide_imgs):
+        label = slide_key_for(path, i)
+        if st.sidebar.button(f"Slide {label}", key=f"nav_{i}"):
+            st.session_state.idx = i
+            st.rerun()
+else:
+    st.sidebar.info("No slides detected. Put PNG/JPG files in the `slides/` folder.")
+
+# ===============================
 # Layout
-# ---------------------------
+# ===============================
 left, right = st.columns([2, 1])
 
+# ----- LEFT column: slides, narration, audio, nav -----
 with left:
     st.title("INFO 300 — TCP/IP Model (5-layer)")
 
-    # Slides
-    slide_imgs = sorted_slides()
     if not slide_imgs:
         st.warning("No slides found. Please place PNG/JPGs in the 'slides/' folder.")
     else:
         cur = slide_imgs[st.session_state.idx]
-        slide_num = to_two_digit_slide_num(cur, st.session_state.idx)
+        key = slide_key_for(cur, st.session_state.idx)
 
-        st.markdown(f"### Slide {slide_num}")
+        st.markdown(f"### Slide {key}")
         st.image(cur, use_container_width=True)
 
         st.markdown("#### Narration")
-        narration_text = NARR.get(slide_num, "No narration found for this slide.")
+        narration_text = NARR.get(key, "No narration found for this slide.")
         st.write(narration_text)
 
-        # ---- Audio narration ----
-        t1, t2, _ = st.columns([1, 1, 3])
-        if t1.button("▶️ Play audio narration", key=f"tts_{slide_num}", use_container_width=True):
-            if client is None:
-                st.warning("OpenAI key missing — cannot synthesize audio.")
+        # Audio narration (text-to-speech)
+        c1, c2, _ = st.columns([1, 1, 3])
+        if c1.button("▶️ Play audio narration", key=f"tts_{key}", use_container_width=True):
+            if not client:
+                st.warning("OpenAI key missing or invalid — cannot synthesize audio.")
             else:
-                if slide_num not in st.session_state.tts_cache:
+                if key not in st.session_state.tts_cache:
                     try:
                         speech = client.audio.speech.create(
                             model="gpt-4o-mini-tts",
-                            voice="alloy",  # change to "verse" or "sage" for different style
+                            voice=VOICE,
                             input=narration_text,
                         )
-                        audio_bytes = speech.content
-                        st.session_state.tts_cache[slide_num] = audio_bytes
+                        audio_bytes = speech.content  # recent SDKs return bytes here
+                        st.session_state.tts_cache[key] = audio_bytes
                     except Exception as e:
                         st.error(f"Audio synthesis failed: {e}")
-                if slide_num in st.session_state.tts_cache and st.session_state.tts_cache[slide_num]:
-                    st.audio(st.session_state.tts_cache[slide_num], format="audio/mp3")
-        if t2.button("⟲ Regenerate audio", key=f"tts_regen_{slide_num}", use_container_width=True) and client:
-            st.session_state.tts_cache.pop(slide_num, None)
+                if st.session_state.tts_cache.get(key):
+                    st.audio(st.session_state.tts_cache[key], format="audio/mp3")
+
+        if c2.button("⟲ Regenerate audio", key=f"tts_regen_{key}", use_container_width=True) and client:
+            st.session_state.tts_cache.pop(key, None)
             st.rerun()
 
-        # Navigation
-        n1, n2, n3 = st.columns([1, 1, 5])
+        # Prev / Next
+        n1, n2, n3 = st.columns([1, 4, 1])
         if n1.button("⬅️ Prev", use_container_width=True):
             st.session_state.idx = max(0, st.session_state.idx - 1)
             st.rerun()
-        if n2.button("Next ➡️", use_container_width=True):
+        n2.caption(f"Slide {st.session_state.idx + 1} of {len(slide_imgs)}")
+        if n3.button("Next ➡️", use_container_width=True):
             st.session_state.idx = min(len(slide_imgs) - 1, st.session_state.idx + 1)
             st.rerun()
-        n3.caption(f"Slide {st.session_state.idx+1} of {len(slide_imgs)}")
 
+# ----- RIGHT column: avatar + Q&A -----
 with right:
-    # Headshot above Q&A
-    avatar_path = find_avatar()
-    if avatar_path:
-        st.image(avatar_path, caption="Professor McGarry", width=160)
+    avatar = find_avatar()
+    if avatar:
+        st.image(avatar, caption="Professor McGarry", width=160)
 
     st.header("Q&A (in-class)")
     st.caption("Ask about today’s TCP/IP lecture (5-layer model). Keep questions on topic.")
 
-    # Show chat history
     for m in st.session_state.messages:
         if m["role"] in ("user", "assistant"):
             with st.chat_message("user" if m["role"] == "user" else "assistant"):
                 st.write(m["content"])
 
-    # New input
-    if q := st.chat_input("Enter your question:"):
-        st.session_state.messages.append({"role": "user", "content": q})
-        if client:
-            try:
-                resp = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful teaching assistant for TCP/IP 5-layer model."},
-                        {"role": "user", "content": q},
-                    ],
-                )
-                answer = resp.choices[0].message.content
-            except Exception as e:
-                answer = f"(Error: {e})"
-        else:
-            answer = "OpenAI key missing — cannot answer."
+    prompt = st.chat_input("Ask a question about the TCP/IP model…", disabled=(client is None))
+    if prompt and not client:
+        st.info("OpenAI key missing — add it under Settings → Secrets to enable chat.")
+    elif prompt and client:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.write(prompt)
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": (
+                        "You are a helpful TA for INFO 300. "
+                        "Answer concisely and stay on-topic about the TCP/IP model (5-layer)."
+                    )},
+                    *st.session_state.messages,
+                ],
+                temperature=0.3,
+            )
+            answer = resp.choices[0].message.content
+        except Exception as e:
+            answer = f"(Error contacting OpenAI: {e})"
         st.session_state.messages.append({"role": "assistant", "content": answer})
-        st.rerun()
+        with st.chat_message("assistant"):
+            st.write(answer)
+
