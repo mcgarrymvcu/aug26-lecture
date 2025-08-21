@@ -1,61 +1,74 @@
+import os
+import glob
+import itertools
 import streamlit as st
-import os, glob, itertools
 from openai import OpenAI
 
 # ---------------------------
-# Setup
+# App setup
 # ---------------------------
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title="INFO 300 — TCP/IP Lecture",
+    layout="wide",
+)
 
+# OpenAI client
 client = None
 if "OPENAI_API_KEY" in st.secrets:
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# Cache for TTS
-if "tts_cache" not in st.session_state:
-    st.session_state.tts_cache = {}
+# ---------------------------
+# Helpers
+# ---------------------------
+def sorted_slides(folder="slides"):
+    patterns = [os.path.join(folder, "*.png"), os.path.join(folder, "*.jpg")]
+    all_files = set(itertools.chain.from_iterable(glob.glob(p) for p in patterns))
+    # Sort by number if digits exist, else alphabetically
+    return sorted(all_files, key=lambda f: int(''.join(filter(str.isdigit, os.path.basename(f))) or 0))
 
-# Cache for chat
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+def to_two_digit_slide_num(fname, idx):
+    # Extract digits from filename or fallback to index
+    digits = ''.join(filter(str.isdigit, os.path.basename(fname)))
+    num = int(digits) if digits else idx + 1
+    return f"{num:02d}"
 
-# Slide index
+def find_avatar():
+    for cand in ("slides/avatar.jpg", "slides/avatar.png", "avatar.jpg", "avatar.png"):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+# Example narration (replace with your lecture notes)
+NARR = {
+    "01": "Welcome to the TCP/IP 5-layer model lecture.",
+    "02": "The application layer provides network services to applications.",
+    "03": "The transport layer ensures reliable data transfer.",
+    "04": "The internet layer handles logical addressing and routing.",
+    "05": "The link layer deals with physical addressing and media access.",
+}
+
+# ---------------------------
+# Session state
+# ---------------------------
 if "idx" not in st.session_state:
     st.session_state.idx = 0
-
-# ---------------------------
-# Load slides
-# ---------------------------
-patterns = ["slides/*.png", "slides/*.jpg"]
-all_files = set(itertools.chain.from_iterable(glob.glob(p) for p in patterns))
-slide_imgs = sorted(all_files)
-
-def to_two_digit_slide_num(path, idx):
-    base = os.path.basename(path)
-    num = os.path.splitext(base)[0]
-    if num.isdigit():
-        return num.zfill(2)
-    return str(idx+1).zfill(2)
-
-# Example narration dictionary
-NARR = {
-    "01": "Welcome to the TCP/IP model lecture. We’ll cover the 5-layer stack.",
-    "02": "Physical layer: where signals are transmitted over media.",
-    "03": "Data Link layer: frames, MAC addresses, error detection.",
-    # Add more narrations as needed
-}
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "tts_cache" not in st.session_state:
+    st.session_state.tts_cache = {}
 
 # ---------------------------
 # Layout
 # ---------------------------
-left, right = st.columns([2,1])
+left, right = st.columns([2, 1])
 
 with left:
     st.title("INFO 300 — TCP/IP Model (5-layer)")
 
-    # ----- Slides -----
+    # Slides
+    slide_imgs = sorted_slides()
     if not slide_imgs:
-        st.warning("No slides found. Please place PNGs in the 'slides/' folder.")
+        st.warning("No slides found. Please place PNG/JPGs in the 'slides/' folder.")
     else:
         cur = slide_imgs[st.session_state.idx]
         slide_num = to_two_digit_slide_num(cur, st.session_state.idx)
@@ -77,7 +90,7 @@ with left:
                     try:
                         speech = client.audio.speech.create(
                             model="gpt-4o-mini-tts",
-                            voice="alloy",   # voices: alloy, verse, aria
+                            voice="alloy",  # change to "verse" or "sage" for different style
                             input=narration_text,
                         )
                         audio_bytes = speech.content
@@ -90,74 +103,47 @@ with left:
             st.session_state.tts_cache.pop(slide_num, None)
             st.rerun()
 
-        # ---- Navigation ----
-        nav1, nav2, nav3 = st.columns([1,1,4])
-        if nav1.button("⬅️ Prev", use_container_width=True):
-            if st.session_state.idx > 0:
-                st.session_state.idx -= 1
-                st.rerun()
-        if nav2.button("Next ➡️", use_container_width=True):
-            if st.session_state.idx < len(slide_imgs)-1:
-                st.session_state.idx += 1
-                st.rerun()
+        # Navigation
+        n1, n2, n3 = st.columns([1, 1, 5])
+        if n1.button("⬅️ Prev", use_container_width=True):
+            st.session_state.idx = max(0, st.session_state.idx - 1)
+            st.rerun()
+        if n2.button("Next ➡️", use_container_width=True):
+            st.session_state.idx = min(len(slide_imgs) - 1, st.session_state.idx + 1)
+            st.rerun()
+        n3.caption(f"Slide {st.session_state.idx+1} of {len(slide_imgs)}")
 
 with right:
+    # Headshot above Q&A
+    avatar_path = find_avatar()
+    if avatar_path:
+        st.image(avatar_path, caption="Professor McGarry", width=160)
+
     st.header("Q&A (in-class)")
     st.caption("Ask about today’s TCP/IP lecture (5-layer model). Keep questions on topic.")
-
-    # Headshot avatar
-    if os.path.exists("avatar.jpg"):
-        st.markdown(
-            """
-            <style>
-              .avatar-img {
-                max-height: 120px;
-                width: auto;
-                border-radius: 12px;
-                display: block;
-                margin: 6px auto 10px auto;
-              }
-              .avatar-caption {
-                text-align: center;
-                font-size: 0.85rem;
-                color: rgba(0,0,0,0.6);
-                margin-top: -6px;
-              }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-        st.markdown('<img src="avatar.jpg" class="avatar-img">', unsafe_allow_html=True)
-        st.markdown('<div class="avatar-caption">Professor McGarry</div>', unsafe_allow_html=True)
 
     # Show chat history
     for m in st.session_state.messages:
         if m["role"] in ("user", "assistant"):
-            with st.chat_message("user" if m["role"]=="user" else "assistant"):
+            with st.chat_message("user" if m["role"] == "user" else "assistant"):
                 st.write(m["content"])
 
-    # Input
-    if prompt := st.chat_input("Type your question here..."):
-        st.session_state.messages.append({"role":"user","content":prompt})
-        with st.chat_message("user"):
-            st.write(prompt)
-
+    # New input
+    if q := st.chat_input("Enter your question:"):
+        st.session_state.messages.append({"role": "user", "content": q})
         if client:
             try:
                 resp = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role":"system","content":"You are a helpful teaching assistant answering questions about the TCP/IP 5-layer model lecture."},
-                        *st.session_state.messages
-                    ]
+                        {"role": "system", "content": "You are a helpful teaching assistant for TCP/IP 5-layer model."},
+                        {"role": "user", "content": q},
+                    ],
                 )
                 answer = resp.choices[0].message.content
             except Exception as e:
                 answer = f"(Error: {e})"
         else:
-            answer = "(No API key configured — cannot respond.)"
-
-        st.session_state.messages.append({"role":"assistant","content":answer})
-        with st.chat_message("assistant"):
-            st.write(answer)
-
+            answer = "OpenAI key missing — cannot answer."
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.rerun()
